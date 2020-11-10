@@ -3,12 +3,14 @@ package touch
 import (
 	"bytes"
 	"context"
+	"strings"
 	"time"
 
 	"github.com/pkg/errors"
 	"github.com/rclone/rclone/cmd"
 	"github.com/rclone/rclone/fs"
 	"github.com/rclone/rclone/fs/config/flags"
+	"github.com/rclone/rclone/fs/fspath"
 	"github.com/rclone/rclone/fs/object"
 	"github.com/spf13/cobra"
 )
@@ -17,6 +19,7 @@ var (
 	notCreateNewFile bool
 	timeAsArgument   string
 	localTime        bool
+	FirstOnly        bool
 )
 
 const (
@@ -31,6 +34,12 @@ func init() {
 	flags.BoolVarP(cmdFlags, &notCreateNewFile, "no-create", "C", false, "Do not create the file if it does not exist.")
 	flags.StringVarP(cmdFlags, &timeAsArgument, "timestamp", "t", "", "Use specified time instead of the current time of day.")
 	flags.BoolVarP(cmdFlags, &localTime, "localtime", "", false, "Use localtime for timestamp, not UTC.")
+	flags.BoolVarP(cmdFlags, &FirstOnly, "first-only", "F", false, "Do not touch parent folders.")
+}
+
+type touchJob struct {
+	fs       fs.Fs
+	fileName string
 }
 
 var commandDefinition = &cobra.Command{
@@ -55,9 +64,40 @@ Note that --timestamp is in UTC if you want local time then add the
 `,
 	Run: func(command *cobra.Command, args []string) {
 		cmd.CheckArgs(1, 1, command, args)
-		fsrc, srcFileName := cmd.NewFsDstFile(args)
+
+		var path = args[0]
+		var err error
+		var toTouch []touchJob
+		for {
+			if strings.HasSuffix(path, "/") {
+				// remove padding /
+				path = path[:len(path)-1]
+			}
+
+			dstRemote, file, err := fspath.Split(path)
+			if err != nil || dstRemote == path {
+				break
+			}
+			if dstRemote == "" {
+				dstRemote = "."
+			}
+			fsdt := cmd.NewFsDir([]string{dstRemote})
+			toTouch = append(toTouch, touchJob{fsdt, file})
+
+			if FirstOnly {
+				break
+			}
+			path = dstRemote
+		}
+
 		cmd.Run(true, false, command, func() error {
-			return Touch(context.Background(), fsrc, srcFileName)
+			for _, t := range toTouch {
+				err = Touch(context.Background(), t.fs, t.fileName)
+				if err != nil {
+					return err
+				}
+			}
+			return nil
 		})
 	},
 }
